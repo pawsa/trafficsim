@@ -28,11 +28,20 @@ class DistributionView {
 
     // var element;
     constructor(minVal, maxVal, delta) {
+	this.element = document.createElement('div');
+	this.setRange(minVal, maxVal, delta);
+    }
+
+    setRange(minVal, maxVal, delta) {
 	this.minVal = minVal;
 	this.maxVal = maxVal;
 	this.delta = delta;
 	this.histogram = new Array();
-	this.element = document.createElement('div');
+	while (this.element.firstChild) {
+	    this.element.removeChild(this.element.firstChild);
+	}
+	this.status = document.createElement('div');
+	this.element.appendChild(this.status);
 
 	var steps = (maxVal-minVal) / delta + 1;
 	for (var i = 0; i < steps; i++) {
@@ -43,17 +52,6 @@ class DistributionView {
 	    this.element.appendChild(bar);
 	    this.histogram[i] = bar;
 	    bar.numValue = 0;
-	}
-	this.total = 0;
-	this.sum = 0;
-	this.sumSquares = 0;
-	this.status = document.createElement('div');
-	this.element.appendChild(this.status);
-    }
-
-    clear() {
-	for (var i = 0; i < this.histogram.length; i++) {
-	    this.histogram[i].numValue = 0;
 	}
 	this.total = 0;
 	this.sum = 0;
@@ -76,7 +74,7 @@ class DistributionView {
 	var x = new Array();
 	var running = 0;
 	var sumSquares = 0;
-	var modal = 0;
+	var median = 0;
 	var confidence95Count = 0.95 * this.total;
 	var confidentIdx = 0;
 	for (var i = 0; i < this.histogram.length; i++) {
@@ -87,7 +85,7 @@ class DistributionView {
 	    this.histogram[i].style.width = x[i]* 800 / maxHistogram + 'px';
 	    running += x[i];
 	    if (running < this.total * 0.5) {
-		modal = i;
+		median = i;
 	    }
 	    if (running < confidence95Count) {
 		confidentIdx = i;
@@ -96,12 +94,11 @@ class DistributionView {
 	var avg = this.sum/this.total;
 	var deviation = Math.sqrt(this.sumSquares / this.total - avg * avg);
 	this.status.textContent = (" Avg: " + avg +
-				   " Modal: " + (modal * this.delta + this.minVal) +
+				   " Median: " + (median * this.delta + this.minVal) +
 				   " T(95): " + (confidentIdx * this.delta + this.minVal) +
 				   " Deviation: " + deviation);
     }
 }
-
 
 class DelayDistribution {
     // var center;
@@ -129,7 +126,7 @@ class DocView {
 }
 
 class ControlPanel {
-    createInput(label, val) {
+    createInput(label, val, minValue, maxValue) {
 	var self = this;
 	var l = document.createElement('span');
 	l.textContent = label;
@@ -137,70 +134,114 @@ class ControlPanel {
 	var i = document.createElement('input');
 	i.type = 'number';
 	i.value = val;
+	i.min = minValue;
+	i.max = maxValue;
 	i.addEventListener('change', function() { self.onChange(); });
 	this.element.appendChild(i);
 	return i;
     }
 
     constructor(noEndpoints, noDirectsPerEndpoint, departureInterval,
-		travelTime, punctualityParam) {
+		travelTime, punctualityParam, flexibilityFactor) {
 	this.element = document.createElement('div');
 	this.element.style.border = 'solid thin blue';
-	this.noEndpoints = this.createInput('# endpoints:', noEndpoints);
+	this.noEndpoints = this.createInput('# endpoints:', noEndpoints,
+					    1, 100);
 	this.noDirectsPerEndpoint = this.createInput('# lines/endpoint:',
-						     noDirectsPerEndpoint);
+						     noDirectsPerEndpoint,
+						     1, noEndpoints - 1);
 	this.departureInterval = this.createInput('T(between departures):',
-					       departureInterval);
-	this.travelTime = this.createInput('T(travel):', travelTime);
+						  departureInterval,
+						  1, 120);
+	this.travelTime = this.createInput('T(travel):', travelTime,
+					   1, 120);
 	this.punctualityParam = this.createInput('"avg" delay: ',
-						 punctualityParam);
+						 punctualityParam,
+						 0, 120);
+	this.flexibilityParam = this.createInput('"flexible travels %": ',
+						 flexibilityFactor * 100,
+						 0, 100);
     }
-
 
     bindModel(model, view) {
 	this.model = model;
 	this.view = view;
     }
+
+    isValid(numericInput, label) {
+	var n = Number(numericInput.value);
+	var r = Number(numericInput.min) <= n && n <= Number(numericInput.max);
+	if (!r) {
+	    console.log('Invalid parameter value', label, n,
+			numericInput.min, numericInput.max);
+	}
+	return r;
+    }
     
     onChange() {
+	if (!(this.isValid(this.noEndpoints, '#endpoints') &&
+	      this.isValid(this.noDirectsPerEndpoint, '#directs/endpoint') &&
+	      this.isValid(this.departureInterval, 'interval') &&
+	      this.isValid(this.travelTime, 'T') &&
+	      this.isValid(this.punctualityParam, 'punctuality') &&
+	     	      this.isValid(this.flexibilityParam, 'flexibility%'))) {
+	    return;
+	}
 	console.log('recalculating...');
 	this.model.setParams(Number(this.noEndpoints.value),
 			     Number(this.noDirectsPerEndpoint.value),
 			     Number(this.departureInterval.value),
 			     Number(this.travelTime.value),
-			     Number(this.punctualityParam.value));
+			     Number(this.punctualityParam.value),
+			     Number(this.flexibilityParam.value)*0.01);
 	this.model.computeWithView(this.view);
 	this.view.update();
     }
 }
 
 class TrafficModel {
+    TRAVEL_COUNT = 20000;
+
     setParams(noEndpoints, noDirectsPerEndpoint, departureInterval,
-	      travelTime, punctualityParam) {
+	      travelTime, punctualityParam, flexibilityParam) {
 	this.noEndpoints = noEndpoints;
 	this.noDirectsPerEndpoint = noDirectsPerEndpoint;
 	this.departureInterval = departureInterval;
 	this.travelTime = travelTime;
 	this.punctualityParam = punctualityParam;
+	this.flexibilityParam = flexibilityParam;
     }
 
     computeWithView(view) {
-	var dist = new DelayDistribution(0, this.punctualityParam);
-	view.clear();
-	var nRep = 10000;
+	var nRep = this.TRAVEL_COUNT;
 	var directRatio = this.noDirectsPerEndpoint / (this.noEndpoints - 1);
-	var delayBetweenSameLineDepartures = (this.departureInterval /
+
+	var dist = new DelayDistribution(0, this.punctualityParam);
+	view.setRange(this.travelTime-3,
+		      this.travelTime +
+		      this.punctualityParam * 5 +
+		      this.departureInterval * (3 + 8* directRatio),
+		      1);
+
+	var delayBetweenSameLineDepartures = (this.departureInterval *
 					      this.noDirectsPerEndpoint);
 	for (var i = 0; i < nRep; i++) {
-	    var hasDirectConnection = Math.random() > directRatio;
+	    var hasDirectConnection = Math.random() < directRatio;
+	    var isFlexibleTravel = Math.random() < this.flexibilityParam;
 	    if (hasDirectConnection) {
+		var arrivalTime = (isFlexibleTravel
+				   ? 0 : Math.random() * delayBetweenSameLineDepartures);
 		var travelDelayTime = dist.getValue();
-		var directTime = (this.travelTime + travelDelayTime);
+		var directTime = (arrivalTime + this.travelTime +
+				  travelDelayTime);
 		view.add(directTime);
 	    } else {
+		var arrivalTime = (isFlexibleTravel
+				   ? 0 : Math.random() * this.departureInterval);
 		var travelDelayTime = dist.getValue();
 		var transferTime = Math.random() * this.departureInterval;
-		var indirectTime = (this.travelTime + travelDelayTime +
+		var indirectTime = (arrivalTime + this.travelTime +
+				    travelDelayTime +
 				    transferTime);
 		view.add(indirectTime);
 	    }
@@ -215,7 +256,8 @@ class TrafficModel {
 function distTest() {
     var doc = new DocView();
 
-    var dv = new DistributionView(0, 30, 1);
+    var dv = new DistributionView();
+    dv.setRange(0, 30, 1);
     var dist = new DelayDistribution(0, 10);
     doc.addView(dv);
     for (var i =0; i < 10000; i++) {
@@ -240,7 +282,10 @@ transfers.</p>
 program selects a random destination (endpoint). The travel time will
 depend whether this endpoint is connected directly to the starting
 point or a transfer is required. In both cases, the travel time
-includes an actual travel time with a random delay. For an indirectly
+includes an actual travel time with a random delay, and an 'arrival
+waiting time' proportional to the interval between departures. The
+arrival waiting time reflect the assumption that passengers have to
+arrive at the destination at a specific time. For an indirectly
 connected endpoint, the travel time includes additionally a random
 transfer time waiting for any arriving line.</p>
 
@@ -260,13 +305,13 @@ function main() {
     var T = 40;
     var punctuality = 5;
     var departureInterval = 10;
+    var flex = 0.5;
 
-    var maxT = T+punctuality*4 + departureInterval*2;
-    var dv1 = new DistributionView(T-3, maxT, 1);
-    var dv2 = new DistributionView(T-3, maxT, 1);
+    var dv1 = new DistributionView();
+    var dv2 = new DistributionView();
 
-    var c1 = new ControlPanel(nEnds, 3, departureInterval, T, punctuality);
-    var c2 = new ControlPanel(nEnds, 1, departureInterval, T, punctuality);
+    var c1 = new ControlPanel(nEnds, 3, departureInterval, T, punctuality, flex);
+    var c2 = new ControlPanel(nEnds, 1, departureInterval, T, punctuality, flex);
     doc.addView(c1);
     doc.addView(dv1);
     doc.addView(c2);
